@@ -108,6 +108,8 @@ uniqueName nm ns =
 -- check if the supported name is exist or not
 -- if not, add it to current map with 1 (used once)
 -- if exits a same name, give it the postfix 
+-- This supposed to be used with the "fresh" to give a unique %{number} for 
+-- unnamed instructions. The "nm" supplied should be the block name.
 
 instance IsString Name where
   fromString = Name . fromString
@@ -151,7 +153,10 @@ newtype Codegen a = Codegen { runCodegen :: State CodegenState a }
   deriving (Functor, Applicative, Monad, MonadState CodegenState )
 -- So what is Codegen a ? 
 -- It is a datatype that contains a State? where is the function?
+-- It will wrap a function that works on the State value and return 'a' value
+-- as result.
 -- Why wrap the State? where did we gain the facility?
+-- THis is useful since we will to access different parts of the CodegenState value and return different corresponding values as result.
 
 sortBlocks :: [(Name, BlockState)] -> [(Name, BlockState)]
 sortBlocks = sortBy (compare `on` (idx . snd))
@@ -171,7 +176,6 @@ makeBlock (l, (BlockState _ s t)) = BasicBlock l s (maketerm t)
   where
     maketerm (Just x) = x
     maketerm Nothing = error $ "Block has no terminator: " ++ (show l)
-
 -- get a name produce the blockState as basicblock.
 -- But the index is lost. so would the name "l" be produced related with idx.
 -- probably not. Since then they should be put in one function. 
@@ -204,6 +208,7 @@ fresh = do
   i <- gets count
   modify $ \s -> s { count = 1 + i }
   return $ i + 1
+-- supply the unnamed instruction a fresh count to ensure its uniqueness 
 
 instr :: Instruction -> Codegen (Operand)
 instr ins = do
@@ -213,18 +218,24 @@ instr ins = do
   let i = stack blk
   modifyBlock (blk { stack = i ++ [ref := ins] } )
   return $ local ref
--- fresh give a unnamed word for current unnamed instruction and increment the state value
+-- "fresh" give a unnamed word for current unnamed instruction and increment the state value
 -- create a Name using the Word(number) as "ref"
 -- get the current block as "blk"
 --data Named a = Name := a | Do a
 -- ref(Name) := ins (a which is instruction)
 -- add the provided instruction "ins" to stack (Isn't stack++ins kind of less efficiency? There should be a more efficient list appending or stack management)
+-- And why return the "local ref" ? who would use that returned value?
+-- the local ref would be used in Emit.hs, for each instruction, we need to store it to corresponding pointer/address. 
+-- But how come that this local ref is a pointer/address?
 
 terminator :: Named Terminator -> Codegen (Named Terminator)
 terminator trm = do
   blk <- current
   modifyBlock (blk { term = Just trm })
   return trm
+-- modify the current blk. There should be a function realise that current blk
+-- need to be ended. and swith the current blk name. 
+-- return "trm" ? why again
 
 -------------------------------------------------------------------------------
 -- Block Stack
@@ -245,19 +256,27 @@ addBlock bname = do
                    , names = supply
                    }
   return (Name qname)
+-- add an empty block, create its block name based on the input "bname"
+-- what is "bname"? 
 
 setBlock :: Name -> Codegen Name
 setBlock bname = do
   modify $ \s -> s { currentBlock = bname }
   return bname
+-- set the current block name.
 
 getBlock :: Codegen Name
 getBlock = gets currentBlock
+-- get the currentBlock name
 
 modifyBlock :: BlockState -> Codegen ()
 modifyBlock new = do
   active <- gets currentBlock
   modify $ \s -> s { blocks = Map.insert active new (blocks s) }
+-- active is current block's name.
+-- Map.insert, insert a new key and value to the map
+-- if the key is alreay there, replace the value.
+-- It is actually replace the old/Empty BlockState with the "new"
 
 current :: Codegen BlockState
 current = do
@@ -266,6 +285,7 @@ current = do
   case Map.lookup c blks of
     Just x -> return x
     Nothing -> error $ "No such block: " ++ show c
+-- get the current blockstate. first get name then trace the name in blocks.
 
 -------------------------------------------------------------------------------
 -- Symbol Table
@@ -275,6 +295,9 @@ assign :: String -> Operand -> Codegen ()
 assign var x = do
   lcls <- gets symtab
   modify $ \s -> s { symtab = [(var, x)] ++ lcls }
+-- get lcls(?) refers the symboltable in the codegen statevalue
+-- data CodegenState = CodegenState {..., symtab :: SymbolTable, ...}
+-- Then add that String(Variable) and Operand (Operand here is the body/actual value of the Variable) to the symbol table.
 
 getvar :: String -> Codegen Operand
 getvar var = do
@@ -282,6 +305,8 @@ getvar var = do
   case lookup var syms of
     Just x  -> return x
     Nothing -> error $ "Local variable not in scope: " ++ show var
+-- getvar, if the variable with that name is in the symbol table.
+-- return it as Maybe
 
 -------------------------------------------------------------------------------
 
@@ -305,47 +330,113 @@ externf = ConstantOperand . C.GlobalReference double
 -- Arithmetic and Constants
 fadd :: Operand -> Operand -> Codegen Operand
 fadd a b = instr $ FAdd NoFastMathFlags a b []
-
+-- data Instruction = FAdd FastMathFlags operand0 operand1 metadata
+-- 
 fsub :: Operand -> Operand -> Codegen Operand
 fsub a b = instr $ FSub NoFastMathFlags a b []
+-- same as above, FSub FastMathFlags operand0 operand1 metadata
 
 fmul :: Operand -> Operand -> Codegen Operand
 fmul a b = instr $ FMul NoFastMathFlags a b []
+-- same as above, FMul FastMathFlags operand0 operand1 metadata
 
 fdiv :: Operand -> Operand -> Codegen Operand
 fdiv a b = instr $ FDiv NoFastMathFlags a b []
+-- same as above.
 
 fcmp :: FP.FloatingPointPredicate -> Operand -> Operand -> Codegen Operand
 fcmp cond a b = instr $ FCmp cond a b []
+-- same as above. Just the Predicate would indicate which condition comparison (16 kinds of comp) would be used upon the two operands.
+-- should return a true/false boolean value.
 
 cons :: C.Constant -> Operand
 cons = ConstantOperand
+{-data Operand = ... | ConstantOperand C.Constant | ...-}
+-- It will get  a C.Constant somehow.
 
 uitofp :: Type -> Operand -> Codegen Operand
 uitofp ty a = instr $ UIToFP a ty []
+-- Unsigned Integer to Floating Point
+-- ty here should be the "double" defined earlier.
 
 toArgs :: [Operand] -> [(Operand, [A.ParameterAttribute])]
 toArgs = map (\x -> (x, []))
+-- So here A is LLVM.General.AST.Attribute. Its parameterAttribute is empty?
+-- ParameterAttribute is used to indicate the information for the parameterAttribute 
 
 -- Effects
 call :: Operand -> [Operand] -> Codegen Operand
 call fn args = instr $ Call False CC.C [] (Right fn) (toArgs args) [] []
+-- Call is an "Instruction = Call ..."
+{-isTailCall :: Bool
+  callingConvention :: CallingConvention :: C/Fast/Cold/GHC/Numbered Word32
+  -- so what is calling convention,is it about how ot manipulate the registers?
+  returnAttributes :: [ParameterAttribute]=> [] means no requirements on the return value?
+  function :: CallableOperand
+  {-type CallableOperand =
+  Either LLVM.General.AST.InlineAssembly.InlineAssembly Operand
+    -- the callee can be inline assembly
+  -}
+  arguments :: [(Operand,[ParameterAttribute])] 
+    --"toArgs" 
+  functionAttributes :: [FunctionAttribute]
+  metadata :: InstructionMetadata
+-}
 
 alloca :: Type -> Codegen Operand
 alloca ty = instr $ Alloca ty Nothing 0 []
+-- create a pointer to a stack allocated uninitialized value of the given type
+{-allocatedType :: Type; Type here should be double
+  numElements :: Maybe Operand; numelements here 
+  alignment :: Word32; here is 0
+  metadata :: InstructionMetadata; [] empty as also
+-}
 
 store :: Operand -> Operand -> Codegen Operand
 store ptr val = instr $ Store False ptr val Nothing 0 []
+-- store instruction is used to write to memory
+-- two arguments: a value(val) to store and a address(ptr) at which to store it
+{-volatile :: Bool; marked as volatile means optimizer can not modify the number or order of the 'store' execution.
+  address :: Operand
+  value :: Operand
+  maybeAtomicity :: Maybe Atomicity
+    {-data Atomicity
+      = Atomicity {crossThread :: Bool, memoryOrdering :: MemoryOrdering
+    -}
+  -- If an atomic operation is marked singlethread, it only synchronizes with or participates in modification and seq_cst total orderings with other operations running in the same thread (for example, in signal handlers).
+  alignment :: Word32;
+  metadata :: InstructionMetadata
+-}
 
 load :: Operand -> Codegen Operand
 load ptr = instr $ Load False ptr Nothing 0 []
+{-volatile :: Bool;
+  address :: Operand;
+  maybeAtomicity:: Maybe Atomicity;
+  alignment:: Word32;
+  metadata:: InstructionMetadata; 
+-}
+
 
 -- Control Flow
 br :: Name -> Codegen (Named Terminator)
 br val = terminator $ Do $ Br val []
+{-Br :: Name -> InstructionMetadata -> Terminator-}
+{-data Named a = Name := a | Do a-}
+-- why Named has "Name := a"? what is the meaning of :=. just to differ from Name?
+{-data Name = Name String | UnName Word -}
 
 cbr :: Operand -> Name -> Name -> Codegen (Named Terminator)
 cbr cond tr fl = terminator $ Do $ CondBr cond tr fl []
+{-condition :: Operand;
+  trueDest:: Name; Name should be the name of corresponding block;
+  falseDest :: Name; 
+  metadata' :: InstructionMetadata; Why add ' after the metadata?
+-}
+
 
 ret :: Operand -> Codegen (Named Terminator)
 ret val = terminator $ Do $ Ret (Just val) []
+{-returnOperand :: Maybe Operand
+  metadata':: Instruction Metadata
+-}

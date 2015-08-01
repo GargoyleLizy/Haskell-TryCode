@@ -39,6 +39,7 @@ repl = runInputT defaultSettings (loop initModule)
         case modn of
           Just modn -> loop modn
           Nothing -> loop mod
+-- runInputT is in haskeline module.
 
 main :: IO ()
 main = do
